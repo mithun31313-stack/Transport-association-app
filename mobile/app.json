@@ -11,7 +11,7 @@
       "permissions": []
     },
     "extra": {
-      "apiBaseUrl": "https://your-backend-domain.example.com/api",
+     "apiBaseUrl": "https://transport-association-app.onrender.com/api",
       "eas": {
         "projectId": "REPLACE_WITH_YOUR_EAS_PROJECT_ID"
       }
