@@ -1,0 +1,567 @@
+// ============================================================
+// TRANSPORT ASSOCIATION MANAGEMENT — PRISMA SCHEMA (PostgreSQL)
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------
+// AUTH / USERS
+// ---------------------------------------------------------
+
+enum Role {
+  ADMIN
+  DRIVER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  phone        String   @unique
+  email        String?  @unique
+  passwordHash String
+  role         Role
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  admin  Admin?
+  driver Driver?
+
+  notifications Notification[]
+  auditLogs     AuditLog[] @relation("AuditActor")
+
+  @@index([role])
+}
+
+model Admin {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id])
+  name   String
+
+  createdSalaries    SalaryRecord[]   @relation("SalaryCreatedBy")
+  approvedSalaries   SalaryRecord[]   @relation("SalaryApprovedBy")
+  createdPayments    SalaryPayment[]  @relation("PaymentCreatedBy")
+}
+
+// ---------------------------------------------------------
+// ASSOCIATION SETTINGS
+// ---------------------------------------------------------
+
+model AppSettings {
+  id                 String   @id @default("singleton")
+  associationName    String   @default("Transport Association")
+  logoUrl            String?
+  address            String?
+  phone              String?
+  email              String?
+  receiptPrefix      String   @default("SAL")
+  financialYearStart Int      @default(4) // month, e.g. April = 4
+  lastBackupAt       DateTime?
+  updatedAt          DateTime @updatedAt
+}
+
+// ---------------------------------------------------------
+// MEMBERS
+// ---------------------------------------------------------
+
+enum MemberStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Member {
+  id             String       @id @default(cuid())
+  membershipNo   String       @unique
+  name           String
+  phone          String
+  email          String?
+  address        String?
+  joiningDate    DateTime
+  status         MemberStatus @default(ACTIVE)
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  vehicles     Vehicle[]
+  incomes      IncomeTransaction[]
+  dues         MemberDue[]
+
+  @@index([status])
+}
+
+model MemberDue {
+  id              String    @id @default(cuid())
+  memberId        String
+  member          Member    @relation(fields: [memberId], references: [id])
+  vehicleId       String?
+  vehicle         Vehicle?  @relation(fields: [vehicleId], references: [id])
+  feeType         String
+  amount          Decimal   @db.Decimal(12, 2)
+  dueDate         DateTime
+  paidAmount      Decimal   @default(0) @db.Decimal(12, 2)
+  remainingAmount Decimal   @db.Decimal(12, 2)
+  status          String    @default("PENDING") // PENDING, PARTIAL, PAID, OVERDUE
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status])
+  @@index([memberId])
+}
+
+// ---------------------------------------------------------
+// VEHICLES
+// ---------------------------------------------------------
+
+enum VehicleStatus {
+  RUNNING
+  NOT_RUNNING
+  MAINTENANCE
+}
+
+model Vehicle {
+  id                 String        @id @default(cuid())
+  registrationNumber String        @unique
+  vehicleType        String
+  manufacturer       String?
+  model              String?
+  year               Int?
+  status             VehicleStatus @default(RUNNING)
+  ownerMemberId      String?
+  ownerMember        Member?       @relation(fields: [ownerMemberId], references: [id])
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  assignments DriverVehicleAssignment[]
+  documents   VehicleDocument[]
+  dues        MemberDue[]
+  incomes     IncomeTransaction[]
+
+  @@index([status])
+}
+
+model DriverVehicleAssignment {
+  id         String    @id @default(cuid())
+  driverId   String
+  driver     Driver    @relation(fields: [driverId], references: [id])
+  vehicleId  String
+  vehicle    Vehicle   @relation(fields: [vehicleId], references: [id])
+  assignedAt DateTime  @default(now())
+  unassignedAt DateTime?
+  isActive   Boolean   @default(true)
+
+  @@index([driverId])
+  @@index([vehicleId])
+}
+
+enum DocStatus {
+  VALID
+  EXPIRING_SOON
+  EXPIRED
+}
+
+model VehicleDocument {
+  id          String    @id @default(cuid())
+  vehicleId   String
+  vehicle     Vehicle   @relation(fields: [vehicleId], references: [id])
+  type        String // RC, INSURANCE, FITNESS, PERMIT, POLLUTION, TAX
+  docNumber   String?
+  issueDate   DateTime?
+  expiryDate  DateTime?
+  fileUrl     String?
+  status      DocStatus @default(VALID)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([vehicleId])
+  @@index([expiryDate])
+}
+
+// ---------------------------------------------------------
+// DRIVERS
+// ---------------------------------------------------------
+
+enum DriverStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// A driver who signs themselves up starts PENDING and can't be paid or assigned
+// a vehicle until an Admin reviews their documents and approves them.
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Driver {
+  id                String         @id @default(cuid())
+  userId            String         @unique
+  user              User           @relation(fields: [userId], references: [id])
+  employeeId        String         @unique
+  fullName          String
+  phone             String
+  email             String?
+  address           String?
+  joiningDate        DateTime
+  licenceNumber     String?
+  licenceExpiry     DateTime?
+  emergencyContact  String?
+  profilePhotoUrl   String?
+  status            DriverStatus   @default(INACTIVE)
+  approvalStatus    ApprovalStatus @default(PENDING)
+  approvedById      String?
+  approvedAt        DateTime?
+  rejectionReason   String?
+  selfRegistered    Boolean        @default(false)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  vehicleAssignments DriverVehicleAssignment[]
+  bankAccount        DriverBankAccount?
+  documents          DriverDocument[]
+  attendance         DriverAttendance[]
+  workSessions       WorkSession[]
+  salaryRecords      SalaryRecord[]
+  salaryIncrements   SalaryIncrement[]
+  salaryAdvances     SalaryAdvance[]
+  salaryDeductions   SalaryDeduction[]
+  salaryPayments     SalaryPayment[]
+  expenses           ExpenseTransaction[]
+  announcementsTo    AnnouncementTarget[]
+
+  @@index([status])
+}
+
+enum BankVerification {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+model DriverBankAccount {
+  id                 String            @id @default(cuid())
+  driverId           String            @unique
+  driver             Driver            @relation(fields: [driverId], references: [id])
+  accountHolderName  String
+  bankName           String
+  accountNumber      String // stored encrypted at application layer; never returned unmasked except to owner/admin
+  ifsc               String
+  branch             String?
+  verificationStatus BankVerification  @default(PENDING)
+  verifiedByAdminId  String?
+  verifiedAt         DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+}
+
+model DriverDocument {
+  id         String    @id @default(cuid())
+  driverId   String
+  driver     Driver    @relation(fields: [driverId], references: [id])
+  type       String // LICENCE, ID_PROOF, OTHER
+  docNumber  String?
+  issueDate  DateTime?
+  expiryDate DateTime?
+  fileUrl    String?
+  status     DocStatus @default(VALID)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([driverId])
+}
+
+// ---------------------------------------------------------
+// ATTENDANCE / WORK SESSIONS
+// ---------------------------------------------------------
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  HALF_DAY
+  LEAVE
+}
+
+model DriverAttendance {
+  id        String           @id @default(cuid())
+  driverId  String
+  driver    Driver           @relation(fields: [driverId], references: [id])
+  date      DateTime         @db.Date
+  status    AttendanceStatus
+  checkIn   DateTime?
+  checkOut  DateTime?
+  remarks   String?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@unique([driverId, date])
+  @@index([date])
+}
+
+model WorkSession {
+  id        String    @id @default(cuid())
+  driverId  String
+  driver    Driver    @relation(fields: [driverId], references: [id])
+  date      DateTime  @db.Date
+  startTime DateTime
+  endTime   DateTime?
+  durationMinutes Int?
+  createdAt DateTime  @default(now())
+
+  @@index([driverId, date])
+}
+
+// ---------------------------------------------------------
+// SALARY
+// ---------------------------------------------------------
+
+enum SalaryStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  PAID
+  FAILED
+  CANCELLED
+}
+
+model SalaryRecord {
+  id             String       @id @default(cuid())
+  driverId       String
+  driver         Driver       @relation(fields: [driverId], references: [id])
+  month          Int
+  year           Int
+  basicSalary    Decimal      @db.Decimal(12, 2)
+  allowance      Decimal      @default(0) @db.Decimal(12, 2)
+  bonus          Decimal      @default(0) @db.Decimal(12, 2)
+  otherPayment   Decimal      @default(0) @db.Decimal(12, 2)
+  advance        Decimal      @default(0) @db.Decimal(12, 2)
+  deduction      Decimal      @default(0) @db.Decimal(12, 2)
+  netSalary      Decimal      @db.Decimal(12, 2) // always server-computed
+  status         SalaryStatus @default(DRAFT)
+  requestedByDriver Boolean   @default(false) // true when the driver tapped "Request Salary" rather than Admin creating it
+  requestedAt       DateTime?
+  createdById    String?
+  createdBy      Admin?       @relation("SalaryCreatedBy", fields: [createdById], references: [id])
+  approvedById   String?
+  approvedBy     Admin?       @relation("SalaryApprovedBy", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+  paidAt         DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  payments   SalaryPayment[]
+  corrections SalaryCorrection[]
+
+  @@unique([driverId, month, year])
+  @@index([status])
+  @@index([driverId])
+}
+
+// PAID salaries are never edited directly (Rule 8). Corrections are separate records.
+model SalaryCorrection {
+  id             String       @id @default(cuid())
+  salaryRecordId String
+  salaryRecord   SalaryRecord @relation(fields: [salaryRecordId], references: [id])
+  reason         String
+  adjustment     Decimal      @db.Decimal(12, 2) // positive or negative
+  createdById    String
+  createdAt      DateTime     @default(now())
+}
+
+model SalaryIncrement {
+  id                String   @id @default(cuid())
+  driverId          String
+  driver            Driver   @relation(fields: [driverId], references: [id])
+  previousSalary    Decimal  @db.Decimal(12, 2)
+  incrementAmount   Decimal  @db.Decimal(12, 2)
+  incrementPercent  Decimal? @db.Decimal(5, 2)
+  incrementPeriodMonths Int  @default(12)
+  lastIncrementDate DateTime?
+  nextIncrementDate DateTime
+  status            String   @default("PENDING") // PENDING, DUE, APPROVED
+  approvedAt        DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([driverId])
+  @@index([nextIncrementDate])
+}
+
+model SalaryAdvance {
+  id        String   @id @default(cuid())
+  driverId  String
+  driver    Driver   @relation(fields: [driverId], references: [id])
+  amount    Decimal  @db.Decimal(12, 2)
+  reason    String?
+  month     Int
+  year      Int
+  createdAt DateTime @default(now())
+}
+
+model SalaryDeduction {
+  id        String   @id @default(cuid())
+  driverId  String
+  driver    Driver   @relation(fields: [driverId], references: [id])
+  amount    Decimal  @db.Decimal(12, 2)
+  reason    String?
+  month     Int
+  year      Int
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------
+// MANUAL BANK TRANSFER SALARY PAYMENT (core feature)
+// ---------------------------------------------------------
+
+enum PaymentStatus {
+  PAID
+  CANCELLED
+  FAILED
+}
+
+model SalaryPayment {
+  id                   String        @id @default(cuid())
+  salaryId             String
+  salary               SalaryRecord  @relation(fields: [salaryId], references: [id])
+  driverId             String
+  driver               Driver        @relation(fields: [driverId], references: [id])
+  amount               Decimal       @db.Decimal(12, 2)
+  paymentMethod        String        @default("MANUAL_BANK_TRANSFER")
+  paymentDate          DateTime
+  utr                  String
+  bankName             String
+  maskedAccountNumber  String
+  ifsc                 String
+  remarks              String?
+  status               PaymentStatus @default(PAID)
+  createdById          String
+  createdBy            Admin         @relation("PaymentCreatedBy", fields: [createdById], references: [id])
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  expense  ExpenseTransaction?
+  receipt  Receipt?
+
+  @@unique([salaryId], name: "one_successful_payment_per_salary")
+  @@index([utr])
+  @@index([driverId])
+}
+
+model Receipt {
+  id              String        @id @default(cuid())
+  receiptNumber   String        @unique
+  salaryPaymentId String        @unique
+  salaryPayment   SalaryPayment @relation(fields: [salaryPaymentId], references: [id])
+  pdfUrl          String
+  createdAt       DateTime      @default(now())
+}
+
+// ---------------------------------------------------------
+// INCOME / EXPENSE / LEDGER
+// ---------------------------------------------------------
+
+model IncomeTransaction {
+  id            String   @id @default(cuid())
+  category      String // MEMBERSHIP_FEE, VEHICLE_FEE, REGISTRATION_FEE, RENEWAL_FEE, ASSOCIATION_COLLECTION, OTHER
+  amount        Decimal  @db.Decimal(12, 2)
+  memberId      String?
+  member        Member?  @relation(fields: [memberId], references: [id])
+  vehicleId     String?
+  vehicle       Vehicle? @relation(fields: [vehicleId], references: [id])
+  date          DateTime
+  paymentMethod String // CASH, UPI, BANK_TRANSFER, CHEQUE, OTHER
+  reference     String?
+  description   String?
+  receiptUrl    String?
+  status        String   @default("SUCCESS") // only SUCCESS counts toward balance
+  createdAt     DateTime @default(now())
+
+  @@index([date])
+  @@index([status])
+}
+
+model ExpenseTransaction {
+  id            String   @id @default(cuid())
+  category      String // DRIVER_SALARY, VEHICLE_MAINTENANCE, OFFICE, ELECTRICITY, RENT, MEETING_EVENT, INSURANCE, TRAVEL, OTHER
+  amount        Decimal  @db.Decimal(12, 2)
+  date          DateTime
+  description   String?
+  paymentMethod String   @default("BANK_TRANSFER")
+  reference     String?
+  receiptUrl    String?
+  createdById   String
+  status        String   @default("COMPLETED") // only COMPLETED counts toward balance
+  createdAt     DateTime @default(now())
+
+  // linked automatically when this expense was generated by a salary payment
+  driverId        String?
+  driver          Driver?        @relation(fields: [driverId], references: [id])
+  salaryPaymentId String?        @unique
+  salaryPayment   SalaryPayment? @relation(fields: [salaryPaymentId], references: [id])
+
+  @@index([date])
+  @@index([status])
+}
+
+// ---------------------------------------------------------
+// ANNOUNCEMENTS / NOTIFICATIONS
+// ---------------------------------------------------------
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  message   String
+  priority  String   @default("NORMAL") // LOW, NORMAL, HIGH
+  targetAll Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  targets AnnouncementTarget[]
+}
+
+model AnnouncementTarget {
+  id             String       @id @default(cuid())
+  announcementId String
+  announcement   Announcement @relation(fields: [announcementId], references: [id])
+  driverId       String
+  driver         Driver       @relation(fields: [driverId], references: [id])
+
+  @@index([driverId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  title     String
+  message   String
+  type      String // SALARY_PAID, RECEIPT_AVAILABLE, INCREMENT, ANNOUNCEMENT, DOC_EXPIRY, BANK_VERIFIED, APPROVAL_NEEDED, etc.
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+}
+
+// ---------------------------------------------------------
+// AUDIT LOG
+// ---------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("AuditActor", fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String
+  oldValue  Json?
+  newValue  Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
