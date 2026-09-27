@@ -79,8 +79,6 @@ router.post("/", requireAuth, requireRole("ADMIN"), async (req, res) => {
           licenceNumber: d.licenceNumber,
           licenceExpiry: d.licenceExpiry ? new Date(d.licenceExpiry) : undefined,
           emergencyContact: d.emergencyContact,
-          // Admin-created drivers are trusted immediately — no approval step needed
-          // (approval only applies to drivers who self-register).
           status: "ACTIVE",
           approvalStatus: "APPROVED",
           approvedAt: new Date(),
@@ -218,6 +216,12 @@ router.delete("/:id/force", requireAuth, requireRole("ADMIN"), async (req, res) 
     await tx.salaryIncrement.deleteMany({ where: { driverId: driver.id } });
 
     await tx.driver.delete({ where: { id: driver.id } });
+
+    // The driver's own login account has notifications and audit-log entries pointing
+    // at it (actions they took themselves) — those must go before the account can be
+    // deleted, since both relations are required (not nullable) on User.
+    await tx.notification.deleteMany({ where: { userId: driver.userId } });
+    await tx.auditLog.deleteMany({ where: { userId: driver.userId } });
     await tx.user.delete({ where: { id: driver.userId } });
 
     await writeAudit(tx, { userId: req.user.id, action: "DRIVER_FORCE_DELETED", entity: "Driver", entityId: driver.id, oldValue: driver });
@@ -257,7 +261,7 @@ router.get("/pending/list", requireAuth, requireRole("ADMIN"), async (req, res) 
 
 // ---- Approve / reject a self-registered driver (admin only) ----
 router.post("/:id/approve", requireAuth, requireRole("ADMIN"), async (req, res) => {
-  const { employeeId } = req.body; // optionally assign a real employee ID on approval
+  const { employeeId } = req.body;
   const driver = await prisma.driver.findUnique({ where: { id: req.params.id } });
   if (!driver) return res.status(404).json({ error: "Driver not found" });
   if (driver.approvalStatus === "APPROVED") return res.status(409).json({ error: "Driver already approved" });
@@ -307,9 +311,6 @@ router.post("/:id/reject", requireAuth, requireRole("ADMIN"), async (req, res) =
 });
 
 // ---- Driver documents: upload (driver, own only, or admin) ----
-// Accepts a base64-encoded file inline (fine for ID photos/PDFs at reasonable size).
-// For production scale, swap this for a real file host (e.g. Cloudinary) and store
-// just the resulting URL instead of the base64 data.
 const documentSchema = z.object({
   type: z.enum(["AADHAR", "PAN", "LICENCE", "ID_PROOF", "OTHER"]),
   docNumber: z.string().optional(),
@@ -322,7 +323,6 @@ router.post("/:id/documents", requireAuth, requireSelfOrAdmin((req) => req.param
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const d = parsed.data;
 
-  // Rough size guard: base64 is ~1.37x the original bytes; cap around 4MB source file.
   if (d.fileBase64.length > 5_500_000) {
     return res.status(413).json({ error: "File too large — please upload a smaller image (under ~4MB)" });
   }
@@ -384,7 +384,7 @@ router.put("/:id/bank", requireAuth, requireSelfOrAdmin((req) => req.params.id),
 
 // ---- Verify bank account (admin only) ----
 router.post("/:id/bank/verify", requireAuth, requireRole("ADMIN"), async (req, res) => {
-  const { decision } = req.body; // "VERIFIED" | "REJECTED"
+  const { decision } = req.body;
   if (!["VERIFIED", "REJECTED"].includes(decision)) return res.status(400).json({ error: "decision must be VERIFIED or REJECTED" });
 
   const updated = await prisma.$transaction(async (tx) => {
